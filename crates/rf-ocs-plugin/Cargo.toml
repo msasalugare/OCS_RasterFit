@@ -1,0 +1,18 @@
+[package]
+name = "rf-ocs-plugin"
+version = "0.1.0"
+edition = "2021"
+description = "Native OpenCADStudio desktop plugin for RasterFit"
+license = "GPL-3.0-only"
+repository = "https://github.com/userfypp/r2dxf"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rf-core = { path = "../rf-core" }
+ocs_plugin_api = { git = "https://github.com/HakanSeven12/OpenCADStudio", rev = "0e77cae65227", features = ["host"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+hayro = "0.7.1"
+serde = { workspace = true }
+serde_json = { workspace = true }

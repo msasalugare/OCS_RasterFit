@@ -1,0 +1,14 @@
+[plugin]
+id = "com.rasterfit"
+name = "RasterFit"
+version = "0.1.0"
+description = "Fit parametric sketches to calibrated raster drawings"
+author = "RasterFit contributors"
+license = "GPL-3.0-only"
+repository = "userfypp/r2dxf"
+
+[opencad]
+api_version = 14
+ribbon_order = 60
+command_prefixes = ["RF_OPEN", "RF_OPEN_PDF", "RF_PAGE_PREV", "RF_PAGE_NEXT", "RF_IMAGE_ADJUST", "RF_IMAGE_APPLY", "RF_LINE", "RF_POLYLINE", "RF_CALIBRATE", "RF_CALIBRATE_LENGTH", "RF_CALIBRATE_APPLY", "RF_LEVEL", "RF_LEVEL_APPLY", "RF_ORIGIN", "RF_ORIGIN_APPLY", "RF_ORIGIN_RESET", "RF_GUIDES", "RF_MASK_SYNC", "RF_MASK_BRUSH", "RF_MASK_BRUSH_APPLY", "RF_MASK_INCLUDE", "RF_MASK_EXCLUDE", "RF_MASK_RECT", "RF_MASK_POLYGON", "RF_MASK_ERASE", "RF_MASK_FROM_SELECTION", "RF_MASK_CLEAR", "RF_CONSTRAINT_COINCIDENT", "RF_CONSTRAINT_TANGENT", "RF_MEASURE_DISTANCE", "RF_MEASURE_ANGLE", "RF_HATCH", "RF_FIT_PREVIEW", "RF_FIT", "RF_FIT_OPTIONS", "RF_HEATMAP", "RF_EXPORT_REPORT", "RF_STATUS"]
+xdata_apps = ["RASTERFIT"]
