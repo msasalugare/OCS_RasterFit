@@ -277,4 +277,136 @@ mod tests {
         assert!(output.contains("coverage 80.0%"));
         assert!(output.contains("converged true"));
     }
+
+    fn pdf_fit_case(bytes: &[u8], border_y: usize) -> FitOutput {
+        let raster = crate::raster::decode_raster(bytes).unwrap();
+        let y = (border_y - 1500 + 5) as f64;
+        let sketch = Sketch {
+            points: vec![
+                SketchPoint {
+                    id: PointId(1),
+                    x: 100.0,
+                    y,
+                },
+                SketchPoint {
+                    id: PointId(2),
+                    x: 1800.0,
+                    y,
+                },
+            ],
+            lines: vec![SketchLine {
+                id: LineId(1),
+                a: PointId(1),
+                b: PointId(2),
+                construction: false,
+            }],
+            ..Sketch::default()
+        };
+        fit_native_sketch(&sketch, &raster, None, FitOptions::default()).unwrap()
+    }
+
+    #[test]
+    fn pdf_fit_samples_match_rms_and_coverage_baseline() {
+        let cases = [
+            (
+                "09225",
+                include_bytes!("../tests/fixtures/pdf-fit/09225.png").as_slice(),
+                1677,
+                3.28184,
+                0.95535,
+            ),
+            (
+                "09224",
+                include_bytes!("../tests/fixtures/pdf-fit/09224.png").as_slice(),
+                1695,
+                0.29251,
+                1.0,
+            ),
+            (
+                "09223",
+                include_bytes!("../tests/fixtures/pdf-fit/09223.png").as_slice(),
+                1691,
+                1.39134,
+                1.0,
+            ),
+            (
+                "09222",
+                include_bytes!("../tests/fixtures/pdf-fit/09222.png").as_slice(),
+                1676,
+                0.32325,
+                1.0,
+            ),
+            (
+                "09221",
+                include_bytes!("../tests/fixtures/pdf-fit/09221.png").as_slice(),
+                1557,
+                2.92076,
+                0.38778,
+            ),
+            (
+                "09220",
+                include_bytes!("../tests/fixtures/pdf-fit/09220.png").as_slice(),
+                1683,
+                0.33858,
+                1.0,
+            ),
+            (
+                "09214",
+                include_bytes!("../tests/fixtures/pdf-fit/09214.png").as_slice(),
+                1680,
+                0.45797,
+                1.0,
+            ),
+            (
+                "09213",
+                include_bytes!("../tests/fixtures/pdf-fit/09213.png").as_slice(),
+                1682,
+                0.49266,
+                1.0,
+            ),
+            (
+                "09212",
+                include_bytes!("../tests/fixtures/pdf-fit/09212.png").as_slice(),
+                1662,
+                0.27455,
+                1.0,
+            ),
+            (
+                "09211",
+                include_bytes!("../tests/fixtures/pdf-fit/09211.png").as_slice(),
+                1682,
+                0.42173,
+                1.0,
+            ),
+            (
+                "09210",
+                include_bytes!("../tests/fixtures/pdf-fit/09210.png").as_slice(),
+                1656,
+                0.21210,
+                1.0,
+            ),
+            (
+                "09200",
+                include_bytes!("../tests/fixtures/pdf-fit/09200.png").as_slice(),
+                1668,
+                0.37005,
+                1.0,
+            ),
+        ];
+        for (name, bytes, border_y, expected_rms, expected_coverage) in cases {
+            let output = pdf_fit_case(bytes, border_y);
+            let coverage = 1.0 - output.result.uncovered_ratio;
+            assert!(output.result.converged, "{name} did not converge");
+            assert!(coverage > 0.0, "{name} has no ridge matches");
+            assert!(
+                (output.result.rms_px - expected_rms).abs() < 0.05,
+                "{name}: RMS {} differs from baseline {expected_rms}",
+                output.result.rms_px
+            );
+            assert!(
+                (coverage - expected_coverage).abs() < 0.01,
+                "{name}: coverage {coverage} differs from baseline {expected_coverage}"
+            );
+        }
+    }
 }
