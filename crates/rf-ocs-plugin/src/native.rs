@@ -140,25 +140,31 @@ pub(crate) fn sketch_from_entities(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn update_fit_entities(
     host: &mut dyn HostApi,
     originals: Vec<EntityType>,
     outputs: Vec<CadEntity>,
+    primitive_origins: &[Handle],
     fit: &FitterResult,
     transform: RasterTransform,
     raster_height: usize,
     fit_geometry: bool,
 ) -> Result<usize, String> {
-    if originals.is_empty() || (fit_geometry && originals.len() != outputs.len()) {
+    if originals.is_empty() {
         return Err("fitted geometry does not match the selected CAD entities".to_string());
+    }
+    if fit_geometry && outputs.len() != primitive_origins.len() {
+        return Err("fitted primitive origins do not match the fit output".to_string());
     }
     let mut handles = Vec::with_capacity(originals.len());
     let mut entities = Vec::with_capacity(originals.len());
     let mut records = Vec::with_capacity(originals.len());
+    let mut used = vec![false; outputs.len()];
     for (index, original) in originals.into_iter().enumerate() {
         let handle: Handle = original.common().handle;
         let entity = if fit_geometry {
-            with_original_common(&original, outputs[index].entity.clone())
+            fit_entity(&original, &outputs, primitive_origins, &mut used)?
         } else {
             rigid_entity(&original, fit, transform, raster_height)?
         };
@@ -166,11 +172,15 @@ pub(crate) fn update_fit_entities(
         let mut record = ExtendedDataRecord::new("RASTERFIT");
         record.add_value(XDataValue::String("RASTERFIT-CLASS:FIT".to_string()));
         record.add_value(XDataValue::String(
-            outputs
-                .get(index)
-                .map(|output| output.kind)
-                .unwrap_or_else(|| entity_kind(&original))
-                .to_string(),
+            if matches!(original, EntityType::LwPolyline(_)) {
+                "LWPOLYLINE"
+            } else {
+                outputs
+                    .get(index)
+                    .map(|output| output.kind)
+                    .unwrap_or_else(|| entity_kind(&original))
+            }
+            .to_string(),
         ));
         record.add_value(XDataValue::String(
             outputs
@@ -183,6 +193,11 @@ pub(crate) fn update_fit_entities(
         record.add_value(XDataValue::Integer16(i16::from(fit.converged)));
         handles.push(handle);
         records.push(record);
+    }
+    if fit_geometry && used.iter().any(|used| !used) {
+        return Err(
+            "fitted geometry has primitives that do not belong to the selection".to_string(),
+        );
     }
 
     host.begin_undo_group("RasterFit fit selection");
@@ -207,6 +222,149 @@ pub(crate) fn update_fit_entities(
         ));
     }
     Ok(handles.len())
+}
+
+fn fit_entity(
+    original: &EntityType,
+    outputs: &[CadEntity],
+    origins: &[Handle],
+    used: &mut [bool],
+) -> Result<EntityType, String> {
+    if let EntityType::LwPolyline(polyline) = original {
+        return fit_polyline(polyline, outputs, origins, used);
+    }
+    let index = take_fit_output(
+        original.common().handle,
+        entity_kind(original),
+        outputs,
+        origins,
+        used,
+    )?;
+    Ok(with_original_common(
+        original,
+        outputs[index].entity.clone(),
+    ))
+}
+
+fn fit_polyline(
+    original: &LwPolyline,
+    outputs: &[CadEntity],
+    origins: &[Handle],
+    used: &mut [bool],
+) -> Result<EntityType, String> {
+    let handle = original.common.handle;
+    let vertex_count = polyline_vertex_count(original);
+    let segment_count = if original.is_closed {
+        vertex_count
+    } else {
+        vertex_count - 1
+    };
+    let mut polyline = original.clone();
+    polyline.vertices.clear();
+    for index in 0..segment_count {
+        let original_bulge = original.vertices[index].bulge;
+        let kind = if original_bulge == 0.0 { "LINE" } else { "ARC" };
+        let output_index = take_fit_output(handle, kind, outputs, origins, used)?;
+        let (start, end, bulge) =
+            fit_segment_geometry(&outputs[output_index].entity, original_bulge, index + 1)?;
+        if index == 0 {
+            let mut start_vertex = original.vertices[index];
+            start_vertex.location.x = start.x;
+            start_vertex.location.y = start.y;
+            start_vertex.bulge = bulge;
+            polyline.vertices.push(start_vertex);
+        } else {
+            polyline.vertices[index].bulge = bulge;
+        }
+        if !original.is_closed || index + 1 < vertex_count {
+            let next = (index + 1) % vertex_count;
+            let mut end_vertex = original.vertices[next];
+            end_vertex.location.x = end.x;
+            end_vertex.location.y = end.y;
+            polyline.vertices.push(end_vertex);
+        }
+    }
+    Ok(EntityType::LwPolyline(polyline))
+}
+
+fn polyline_vertex_count(polyline: &LwPolyline) -> usize {
+    if polyline.is_closed
+        && polyline.vertices.len() > 1
+        && polyline.vertices.first().map(|vertex| vertex.location)
+            == polyline.vertices.last().map(|vertex| vertex.location)
+    {
+        polyline.vertices.len() - 1
+    } else {
+        polyline.vertices.len()
+    }
+}
+
+fn fit_segment_geometry(
+    output: &EntityType,
+    original_bulge: f64,
+    segment: usize,
+) -> Result<(Vector3, Vector3, f64), String> {
+    match output {
+        EntityType::Line(line) => Ok((line.start, line.end, 0.0)),
+        EntityType::Arc(arc) => {
+            let reversed = original_bulge < 0.0;
+            let start_angle = if reversed {
+                arc.end_angle
+            } else {
+                arc.start_angle
+            };
+            let end_angle = if reversed {
+                arc.start_angle
+            } else {
+                arc.end_angle
+            };
+            let sweep = if reversed {
+                -(start_angle - end_angle).rem_euclid(std::f64::consts::TAU)
+            } else {
+                (end_angle - start_angle).rem_euclid(std::f64::consts::TAU)
+            };
+            let bulge = (sweep / 4.0).tan();
+            if !bulge.is_finite() {
+                return Err(format!(
+                    "fitted LWPOLYLINE segment {segment} has invalid bulge geometry"
+                ));
+            }
+            Ok((
+                arc_point(arc.center, arc.radius, start_angle),
+                arc_point(arc.center, arc.radius, end_angle),
+                bulge,
+            ))
+        }
+        _ => Err(format!(
+            "fitted LWPOLYLINE segment {segment} has an unexpected entity type"
+        )),
+    }
+}
+
+fn arc_point(center: Vector3, radius: f64, angle: f64) -> Vector3 {
+    Vector3::new(
+        center.x + radius * angle.cos(),
+        center.y + radius * angle.sin(),
+        0.0,
+    )
+}
+
+fn take_fit_output(
+    handle: Handle,
+    kind: &str,
+    outputs: &[CadEntity],
+    origins: &[Handle],
+    used: &mut [bool],
+) -> Result<usize, String> {
+    let index = (0..outputs.len())
+        .find(|index| {
+            !used[*index]
+                && origins[*index] == handle
+                && entity_kind(&outputs[*index].entity) == kind
+        })
+        .ok_or_else(|| format!("fitted {kind} primitive for entity {handle} is missing"))?;
+    used[index] = true;
+    Ok(index)
 }
 
 fn entity_kind(entity: &EntityType) -> &'static str {
@@ -1004,6 +1162,7 @@ mod tests {
                 &mut host,
                 vec![original],
                 vec![output],
+                &[Handle::new(42)],
                 &fit,
                 RasterTransform::default(),
                 100,
@@ -1041,5 +1200,100 @@ mod tests {
                 XDataValue::Integer16(1),
             ]
         );
+    }
+
+    #[test]
+    fn constrained_polyline_is_rebuilt_from_mixed_line_and_arc_outputs() {
+        let mut original = polyline(
+            &[(0.0, 0.0, 0.0), (10.0, 0.0, 1.0), (10.0, 10.0, 0.0)],
+            true,
+        );
+        original.common.layer = "MECHANICAL".to_string();
+        let outputs = vec![
+            CadEntity {
+                entity: EntityType::Line(Line::from_coords(0.0, 0.0, 0.0, 10.0, 0.0, 0.0)),
+                kind: "LINE",
+                id: 1,
+            },
+            CadEntity {
+                entity: EntityType::Line(Line::from_coords(15.0, 5.0, 0.0, 0.0, 0.0, 0.0)),
+                kind: "LINE",
+                id: 3,
+            },
+            CadEntity {
+                entity: EntityType::Arc(Arc::from_center_radius_angles(
+                    Vector3::new(10.0, 5.0, 0.0),
+                    5.0,
+                    -PI / 2.0,
+                    0.0,
+                )),
+                kind: "ARC",
+                id: 2,
+            },
+        ];
+        let fit = FitterResult {
+            params: Vec::new(),
+            transform: [0.0; 3],
+            scale: 1.0,
+            rms_px: 0.0,
+            max_constraint: 0.0,
+            iterations: 1,
+            converged: true,
+            gauge_warning: false,
+            residuals: Vec::new(),
+            total_samples: 0,
+            matched_samples: 0,
+            inlier_ratio: 1.0,
+            uncovered_ratio: 0.0,
+            mask_too_narrow: false,
+            transform_stddev: [0.0; 3],
+            primitive_stats: Vec::new(),
+        };
+        let mut host = TestHost::default();
+        assert_eq!(
+            update_fit_entities(
+                &mut host,
+                vec![EntityType::LwPolyline(original)],
+                outputs,
+                &[Handle::new(10); 3],
+                &fit,
+                RasterTransform::default(),
+                100,
+                true,
+            ),
+            Ok(1)
+        );
+        let EntityType::LwPolyline(updated) = &host.transactions[0].1[0] else {
+            panic!("polyline must remain LWPOLYLINE");
+        };
+        assert_eq!(updated.common.handle, Handle::new(10));
+        assert_eq!(updated.common.layer, "MECHANICAL");
+        assert!(updated.is_closed);
+        assert_eq!(updated.vertices.len(), 3);
+        assert_eq!(updated.vertices[0].bulge, 0.0);
+        assert!((updated.vertices[1].bulge - (PI / 8.0).tan()).abs() < 1e-9);
+        assert_eq!(updated.vertices[2].bulge, 0.0);
+        assert_eq!(updated.vertices[2].location.x, 15.0);
+        assert_eq!(updated.vertices[2].location.y, 5.0);
+    }
+
+    #[test]
+    fn constrained_single_segment_polyline_does_not_change_entity_kind() {
+        let original = polyline(&[(0.0, 0.0, 0.0), (10.0, 0.0, 0.0)], false);
+        let output = CadEntity {
+            entity: EntityType::Line(Line::from_coords(0.0, 0.0, 0.0, 10.0, 0.0, 0.0)),
+            kind: "LINE",
+            id: 1,
+        };
+        let mut used = [false];
+        let entity = fit_polyline(
+            &original,
+            std::slice::from_ref(&output),
+            &[Handle::new(10)],
+            &mut used,
+        )
+        .unwrap();
+        assert!(matches!(entity, EntityType::LwPolyline(_)));
+        assert!(used[0]);
     }
 }

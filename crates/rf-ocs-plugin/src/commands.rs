@@ -841,6 +841,7 @@ fn fit_command(host: &mut dyn HostApi, state: &SharedState) -> Result<String, St
         host,
         native.originals,
         entities,
+        &origins,
         &output.result,
         transform,
         raster.height,
